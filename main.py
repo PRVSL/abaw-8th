@@ -1,5 +1,5 @@
 """
-Author: Huynh Van Thong
+Author: PRVSL
 https://pr.ai.vn
 """
 import argparse
@@ -38,45 +38,62 @@ class PredictionWriter(BasePredictionWriter):
         preds = []
         # ytruths = []
         # findexes = []
-        image_location = []
+        video_ids = []
         for k in predictions:
             preds.append(k[0])
-            image_location.append(k[1])
-
-        image_location_arr = [np.array(x).T.flatten() for x in image_location]
-        image_location_arr = np.concatenate(image_location_arr).reshape(-1, 1)
+            image_names = k[1]
+            video_ids += [x.split('/')[0] for x in image_names]
+            # findexes.append([int(x.split('/')[1].split('.')[0]) for x in image_names])
 
         if self.task == 'AU':
-            preds_arr = np.concatenate([x.float().numpy().reshape(-1, 12) for x in preds])
-            header_name = ['image_location', 'AU1', 'AU2', 'AU4', 'AU6', 'AU7', 'AU10', 'AU12', 'AU15', 'AU23', 'AU24',
-                           'AU25', 'AU26']
-            header_dtype = {'AU1': float, 'AU2': float, 'AU4': float, 'AU6': float, 'AU7': float, 'AU10': float,
-                            'AU12': float, 'AU15': float, 'AU23': float, 'AU24': float, 'AU25': float, 'AU26': float}
-            header_dtype_out = {'AU1': int, 'AU2': int, 'AU4': int, 'AU6': int, 'AU7': int, 'AU10': int,
-                                'AU12': int, 'AU15': int, 'AU23': int, 'AU24': int, 'AU25': int, 'AU26': int}
+            preds = np.squeeze(1 * (torch.concat(preds).float().numpy() >= 0.5))
+            header_name = ['AU1', 'AU2', 'AU4', 'AU6', 'AU7', 'AU10', 'AU12', 'AU15', 'AU23', 'AU24', 'AU25', 'AU26']
         elif self.task == 'VA':
-            preds_arr = np.concatenate([x.float().numpy().reshape(-1, 2) for x in preds])
-            header_name = ['image_location', 'valence', 'arousal']
-            header_dtype = {'valence': float, 'arousal': float}
+            preds = np.squeeze(torch.concat(preds).float().numpy().astype(float))
+            header_name = ['valence', 'arousal']
         elif self.task == 'EXPR':
-            # preds = np.squeeze(torch.concat(preds).float().numpy())
-            # header_name = ['Neutral', 'Anger', 'Disgust', 'Fear', 'Happiness', 'Sadness', 'Surprise', 'Other']
-            raise NotImplementedError
+            preds = np.squeeze(torch.concat(preds).float().numpy())
+            header_name = ['Neutral', 'Anger', 'Disgust', 'Fear', 'Happiness', 'Sadness', 'Surprise', 'Other']
         else:
             raise ValueError('Do not support write prediction for {} task'.format(self.task))
 
-        all_prediction = np.hstack([image_location_arr, preds_arr])
-        all_prediction_df = pd.DataFrame(all_prediction, columns=header_name)
-        write_df = all_prediction_df.astype(header_dtype)
-        write_df = write_df.groupby('image_location', sort=False).mean()
-        if self.task == 'AU':
-            write_df[write_df >= 0.5] = 1
-            write_df[write_df < 0.5] = 0
-            write_df = write_df.astype(header_dtype_out)
+        # ytruths = np.squeeze(torch.concat(ytruths).numpy())
+        # findexes = np.array(findexes)
+        video_ids = np.array(video_ids)
+
+        video_id_uq = list(pd.unique(video_ids))
+        num_classes = preds.shape[-1]
+
+        sample_prediction = pd.read_csv(f'dataset/test_set/CVPR_8th_ABAW_{self.task}_test_set_example.txt')
+        sample_prediction_indexes = np.array([x.split('/')[0] for x in sample_prediction['image_location'].values])
+
+        all_prediction = []
+
+        for vd in video_id_uq:
+            num_sample_pred = np.sum(sample_prediction_indexes == vd)
+            list_row = video_ids == vd
+            list_preds = preds[list_row, :, :].reshape(-1, preds.shape[-1])
+            # list_indexes = findexes[list_row, :].reshape(-1)
+
+            # if np.sum(np.diff(list_indexes) < 0):
+            #     print('Please check: {}. Indexes are not consistent'.format(vd))
+            # Remove duplicate rows. Because we split sequentially => only padding at the end
+
+            num_frames = num_sample_pred  # len(np.unique(list_indexes))
+
+            write_prediction = list_preds[:num_frames, :]
+            write_prediction_index = np.array(
+                ['{}/{:05d}.jpg'.format(vd, idx + 1) for idx in range(num_frames)]).reshape(-1, 1)
+
+            cur_prediction = np.concatenate((write_prediction_index, write_prediction), axis=1)
+
+            all_prediction.append(cur_prediction)
+
+        all_prediction = np.concatenate(all_prediction)
 
         if self.task in ['AU', 'VA']:
-            write_df.to_csv(
-                '{}/predictions.txt'.format(prediction_folder))
+            pd.DataFrame(data=all_prediction, columns=['image_location'] + header_name).to_csv(
+                '{}/predictions.txt'.format(prediction_folder), index=False)
         elif self.task == 'EXPR':
             with open('{}/predictions.txt'.format(prediction_folder), 'w') as fd:
                 fd.write(','.join(['image_location'] + header_name) + '\n')
@@ -130,7 +147,7 @@ if __name__ == '__main__':
 
         cbacks = [RichProgressBar(leave=False),
                   ModelCheckpoint(monitor='val_metric', mode='max', save_weights_only=True),
-                  EarlyStopping(monitor='val_metric', patience=5, mode='max')]
+                  EarlyStopping(monitor='val_metric', patience=3, mode='max')]
         is_training = True
 
     trainer = pl.Trainer(max_epochs=args.epochs, precision=mixed_precision, num_sanity_val_steps=0,
@@ -142,6 +159,6 @@ if __name__ == '__main__':
         trainer.validate(model, dm, ckpt_path='best')
     else:
         dm.setup()
-        # trainer.validate(model, dm)
+        trainer.validate(model, dm)
         trainer.predict(model, dm.test_dataloader())
         print('Finished')

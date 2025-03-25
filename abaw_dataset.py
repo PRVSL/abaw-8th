@@ -1,5 +1,5 @@
 """
-Author: Huynh Van Thong
+Author: PRVSL
 https://pr.ai.vn
 """
 
@@ -36,7 +36,7 @@ class ABAWDataset(data.Dataset):
                 sep=',', header=0)
             test_df['video_name'] = test_df['image_location'].apply(lambda x: x.split('/')[0])
             data_dict = dict()
-            for video_name, gp in test_df.groupby('video_name', sort=False):
+            for video_name, gp in test_df.groupby('video_name'):
                 data_dict[video_name] = gp.drop('video_name', axis=1).values
 
         self.data_seqs = []
@@ -47,8 +47,7 @@ class ABAWDataset(data.Dataset):
                     continue
             cur_vid_df = data_dict[vid]
             num_frames = cur_vid_df.shape[0]
-            overlap = int(1.*self.seq_len) if self.split != 'Test' else int(0.5*self.seq_len)
-            num_seqs = math.ceil(num_frames / overlap) #math.ceil(num_frames / self.seq_len)
+            num_seqs = math.ceil(num_frames / self.seq_len)
 
             array_indexes = np.arange(num_frames)
             cur_set = set(array_indexes.flatten())
@@ -56,8 +55,8 @@ class ABAWDataset(data.Dataset):
             # Count the number of sequences
             for idx in range(num_seqs):
                 if self.sampling_method == 'sequentially' or self.seq_len == 1:
-                    st_idx = idx * overlap # self.seq_len
-                    ed_idx = min(st_idx + self.seq_len, num_frames)# min((idx + 1) * self.seq_len, num_frames)
+                    st_idx = idx * self.seq_len
+                    ed_idx = min((idx + 1) * self.seq_len, num_frames)
                     # Get the sequence
                     cur_seq = cur_vid_df[st_idx: ed_idx, :]
                     # if self.task == 'EXPR' and cur_seq[0][1] in ['0', '7'] and torch.rand(1) < 0.5 and self.split == 'Train':
@@ -113,7 +112,7 @@ class ABAWDataset(data.Dataset):
         cur_seq_sample = self.data_seqs[index]
 
         sample = {'image': [], #'index': cur_seq_sample[:, -1].astype(np.int32),
-                  'video_id': cur_seq_sample[:, 0].tolist()}  #.split('/')[0]
+                  'video_id': cur_seq_sample[0, 0]}  #.split('/')[0]
         sample.update({self.task: []})
 
         for idx in range(cur_seq_sample.shape[0]):
@@ -196,6 +195,22 @@ class ABAWDataModule(pl.LightningDataModule):
             # Create test set
             self.test_dataset = ABAWDataset(self.data_dir, self.task, self.seq_len, split='Test',
                                             transforms=self.transforms_test)
+
+    # def setup_folds(self, state=None):
+    #     if self.is_setup_folds:
+    #         return
+    #     train_dict = np.load(pathlib.Path(self.data_dir, '{}.npy'.format(self.task)).__str__(), allow_pickle=True).item()['Train']
+    #     self.train_vids = np.unique([x.replace('_left', '').replace('_right', '') for x in train_dict.keys()])
+    #     self.splits = [split for split in KFold(self.num_folds, shuffle=True, random_state=99).split(range(len(self.train_vids)))]
+    #
+    #     self.is_setup_folds = True
+
+    # def setup_fold_index(self, fold_index: int) -> None:
+    #     train_indices, val_indices = self.splits[fold_index]
+    #     self.train_fold = self.train_vids[train_indices]
+    #     self.val_fold = self.train_vids[val_indices]
+    #
+    #     # print('Num vid train {} num vid val {}'.format(len(self.train_fold), len(self.val_fold)))
 
     def train_dataloader(self, shufflex=None):
         sampler = None
